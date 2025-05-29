@@ -1,6 +1,7 @@
 // src/server.js
 import express from "express";
-import { VoiceResponse } from "twilio/lib/twiml/VoiceResponse";
+import { twiml } from "twilio";
+const { VoiceResponse } = twiml;
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
