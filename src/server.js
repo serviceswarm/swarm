@@ -3,30 +3,47 @@
 import express from "express";
 import twilio from "twilio";
 import axios from "axios";
-import FormData from "form-data";
 
 const { VoiceResponse } = twilio.twiml;
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 
-// In‑memory call context (for prod, swap to Redis)
+// In‑memory call context (for demo; replace with Redis/DB in prod)
 const callContext = {};
 
-// Helper: call OpenAI chat endpoint
-async function askOpenAI(prompt) {
+// Helper to call OpenAI Chat API
+async function askOpenAI({ system, user }) {
   const res = await axios.post(
     "https://api.openai.com/v1/chat/completions",
     {
       model: "gpt-4o",
-      messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
-      temperature: 0,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ],
+      temperature: 0
     },
-    { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      }
+    }
   );
   return res.data.choices[0].message.content;
 }
 
-// 1) Entry point: welcome & first gather
+// 0) GET fallback so Twilio’s test pings don’t 404
+app.get("/voice-webhook", (req, res) => {
+  const twiml = new VoiceResponse();
+  twiml.say(
+    { voice: "Polly.Joanna", language: "en-US" },
+    "ServiceSwarm is online and ready to handle calls."
+  );
+  res.type("text/xml").send(twiml.toString());
+});
+
+// 1) Entry point: welcome & gather initial request
 app.post("/voice-webhook", (req, res) => {
   const twiml = new VoiceResponse();
   twiml.say(
@@ -37,95 +54,98 @@ app.post("/voice-webhook", (req, res) => {
     input: "speech",
     action: "/handle-request",
     method: "POST",
-    speechTimeout: "auto",
+    speechTimeout: "auto"
   });
-  gather.say("Please briefly state your repair request, including preferred date and time if you know them.");
-  twiml.redirect("/voice-webhook"); // fallback to restart
+  gather.say(
+    "Please briefly state your repair request, including preferred date and time if you know them."
+  );
+  twiml.redirect("/voice-webhook"); // fallback
   res.type("text/xml").send(twiml.toString());
 });
 
-// 2) Handle initial user request
+// 2) Handle the initial user request
 app.post("/handle-request", async (req, res) => {
   const callSid = req.body.CallSid;
   const transcript = req.body.SpeechResult || "";
   console.log("User said:", transcript);
 
-  // Parse intent + any slots
+  // NLU prompt: parse intent & slots
   const systemPrompt =
     "You are an assistant for scheduling HVAC service. " +
-    "Parse the user’s transcript into JSON with keys: intent ('booking' or 'other'), " +
+    "Parse the transcript into JSON with keys: intent ('booking' or 'other'), " +
     "date (YYYY-MM-DD or ''), time (HH:MM AM/PM or ''), raw_transcript.";
-  const userPrompt = transcript;
   let json;
   try {
-    const aiReply = await askOpenAI({ system: systemPrompt, user: userPrompt });
+    const aiReply = await askOpenAI({ system: systemPrompt, user: transcript });
     json = JSON.parse(aiReply);
   } catch (err) {
     console.error("NLU parse error:", err);
     json = { intent: "other", date: "", time: "", raw_transcript: transcript };
   }
 
-  // Initialize context
+  // Save context
   callContext[callSid] = { ...json };
 
   const twiml = new VoiceResponse();
   if (json.intent !== "booking") {
-    twiml.say("Got it. Our team will review your request and follow up shortly. Goodbye.");
+    twiml.say(
+      "Got it. Our team will review your request and follow up shortly. Goodbye."
+    );
     twiml.hangup();
   } else if (!json.date) {
-    // Ask for date
     const gather = twiml.gather({
       input: "speech",
       action: "/gather-date",
       method: "POST",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     gather.say("Sure—what date would you like to schedule your service?");
   } else if (!json.time) {
-    // Ask for time
     const gather = twiml.gather({
       input: "speech",
       action: "/gather-time",
       method: "POST",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     gather.say(`Great—what time on ${json.date} works best for you?`);
   } else {
-    // All slots present: confirm
     twiml.say(
       `Fantastic! I’ve booked your service for ${json.date} at ${json.time}. ` +
       "We’ll send confirmation via text shortly. Goodbye."
     );
     twiml.hangup();
+    // TODO: call your Scheduler Agent / Google Calendar here
   }
 
   res.type("text/xml").send(twiml.toString());
 });
 
-// 3) Gather date turn
+// 3) Gather date slot
 app.post("/gather-date", async (req, res) => {
   const callSid = req.body.CallSid;
   const said = req.body.SpeechResult || "";
   console.log("Date slot input:", said);
 
-  // Extract absolute date
   const systemPrompt =
     "Convert the following into an absolute date in YYYY-MM-DD format in America/Chicago timezone. " +
     "If you cannot, return an empty string.";
-  const aiReply = await askOpenAI({ system: systemPrompt, user: said });
-  const date = aiReply.trim();
-
+  let date;
+  try {
+    const aiReply = await askOpenAI({ system: systemPrompt, user: said });
+    date = aiReply.trim();
+  } catch (err) {
+    console.error("Date parse error:", err);
+    date = "";
+  }
   callContext[callSid].date = date;
 
-  // Next: time or confirm
-  const ctx = callContext[callSid];
   const twiml = new VoiceResponse();
   if (!date) {
     const gather = twiml.gather({
       input: "speech",
       action: "/gather-date",
       method: "POST",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     gather.say("Sorry, I didn’t catch the date. Please say the date for your appointment.");
   } else {
@@ -133,7 +153,7 @@ app.post("/gather-date", async (req, res) => {
       input: "speech",
       action: "/gather-time",
       method: "POST",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     gather.say(`Thanks—what time on ${date} would you like your HVAC service?`);
   }
@@ -141,42 +161,46 @@ app.post("/gather-date", async (req, res) => {
   res.type("text/xml").send(twiml.toString());
 });
 
-// 4) Gather time turn
+// 4) Gather time slot
 app.post("/gather-time", async (req, res) => {
   const callSid = req.body.CallSid;
   const said = req.body.SpeechResult || "";
   console.log("Time slot input:", said);
 
-  // Extract time slot
   const systemPrompt =
     "Convert the following into a time in HH:MM AM/PM format. If you cannot, return an empty string.";
-  const aiReply = await askOpenAI({ system: systemPrompt, user: said });
-  const time = aiReply.trim();
-
+  let time;
+  try {
+    const aiReply = await askOpenAI({ system: systemPrompt, user: said });
+    time = aiReply.trim();
+  } catch (err) {
+    console.error("Time parse error:", err);
+    time = "";
+  }
   callContext[callSid].time = time;
-
   const ctx = callContext[callSid];
+
   const twiml = new VoiceResponse();
   if (!time) {
     const gather = twiml.gather({
       input: "speech",
       action: "/gather-time",
       method: "POST",
-      speechTimeout: "auto",
+      speechTimeout: "auto"
     });
     gather.say("Sorry, I didn’t catch the time. Please say the time for your appointment.");
   } else {
     twiml.say(
       `All set! Your HVAC service is scheduled for ${ctx.date} at ${time}. Thank you! Goodbye.`
     );
-    // TODO: call your Scheduler Agent / Google Calendar API here
     twiml.hangup();
+    // TODO: integrate Scheduler Agent / CRM here
   }
 
   res.type("text/xml").send(twiml.toString());
 });
 
-// Start the server
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`Multi‑turn voice assistant listening on port ${PORT}`)
