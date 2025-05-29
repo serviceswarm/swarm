@@ -1,6 +1,7 @@
 {
   "name": "serviceswarm-voice-webhook",
   "version": "1.0.0",
+  "type": "module",
   "description": "Inbound call webhook for ServiceSwarm",
   "main": "src/server.js",
   "scripts": {
