@@ -1,0 +1,15 @@
+{
+  "name": "serviceswarm-voice-webhook",
+  "version": "1.0.0",
+  "description": "Inbound call webhook for ServiceSwarm",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "twilio": "^4.11.0"
+  }
+}
