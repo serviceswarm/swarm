@@ -1,7 +1,7 @@
 {
-  "name": "serviceswarm-voice-webhook",
+  "name": "serviceswarm-voice-assistant",
   "version": "1.0.0",
-  "description": "Inbound call webhook + Whisper transcription for ServiceSwarm HVAC repair",
+  "description": "Multi‑turn conversational voice assistant for ServiceSwarm HVAC repair",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
